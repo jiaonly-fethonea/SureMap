@@ -15,6 +15,8 @@ Undo / redo, multi-project group management, import / export
 内置世界、中国、日本、美国等行政区划 GeoJSON 底图
 Built-in administrative GeoJSON basemaps for the World, China, Japan, the United States, and more
 工程结构 / Project Structure
+
+
 SureMap/
 ├── app/
 │   └── src/main/
@@ -34,6 +36,8 @@ SureMap/
 ├── build.gradle / settings.gradle   # Gradle 构建配置
 │                                      # Gradle build configuration
 └── README.md
+
+
 构建 / Build
 环境要求：JDK 17+、Android SDK（platform 33）。
 
