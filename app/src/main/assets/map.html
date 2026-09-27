@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<link rel="stylesheet" href="leaflet/leaflet.css">
+<style>
+html,body,#map{margin:0;padding:0;width:100%;height:100%;background:#e8f0f7;}
+.leaflet-container{font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;}
+.mk{display:flex;align-items:center;justify-content:center;}
+.region-label{background:transparent;border:none;font-size:11px;color:#2b4a63;font-weight:600;white-space:nowrap;text-shadow:-1px 0 rgba(255,255,255,.8),0 1px rgba(255,255,255,.8),1px 0 rgba(255,255,255,.8),0 -1px rgba(255,255,255,.8);pointer-events:none;}
+.mk-tooltip{background:rgba(255,255,255,.97);border:1px solid #bcd8f2;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.18);padding:6px 8px;pointer-events:none;}
+.mk-tooltip::before{display:none;}
+.mk-title{font-weight:700;font-size:13px;color:#2b3a4a;}
+.mk-content{font-size:12px;color:#5a6b7a;margin-top:2px;max-width:190px;white-space:pre-wrap;word-wrap:break-word;}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<script src="leaflet/leaflet.js"></script>
+<script>
+var map=null, geoLayer=null, markerLayer=null, labelLayer=null;
+var geoData=null;
+var markers=[], regions=[];
+var stateMap={};
+var tileMode='standard';
+var toolMode='pan';
+var areaMode='black';
+var osm=null, sat=null, adm=null;
+
+function ensureMap(view){
+  if(map) return;
+  map=L.map('map',{zoomControl:true,attributionControl:true});
+  map.setView([(view&&view.lat!=null)?view.lat:20,(view&&view.lng!=null)?view.lng:0],(view&&view.zoom)?view.zoom:2);
+  markerLayer=L.featureGroup().addTo(map);
+  map.on('moveend',function(){var c=map.getCenter();if(window.Android){window.Android.onViewChanged(c.lat,c.lng,map.getZoom());}});
+  attachLongPress();
+  setTile(tileMode);
+}
+
+function attachLongPress(){
+  var el=map.getContainer();
+  var t0=null, moved=false, sx=0, sy=0;
+  var lastLP={t:0,lat:0,lng:0};
+  // Single long-press entry point. Android WebView fires BOTH the touch-based
+  // timer below AND a native 'contextmenu' for the same gesture, which would
+  // open the record dialog twice. Dedup within a short window / same position.
+  function fire(lat,lng){
+    var now=Date.now();
+    if(now-lastLP.t<1000 && Math.abs(lat-lastLP.lat)<0.01 && Math.abs(lng-lastLP.lng)<0.01) return;
+    lastLP={t:now,lat:lat,lng:lng};
+    if(window.Android){ window.Android.onLongPress(lat,lng); }
+  }
+  el.addEventListener('touchstart',function(e){
+    if(e.touches.length!==1){
+      // multi-touch (pinch zoom): cancel any pending long press
+      if(t0){clearTimeout(t0);t0=null;}
+      moved=true;
+      return;
+    }
+    moved=false;
+    var t=e.touches[0];
+    sx=t.clientX; sy=t.clientY;
+    var latlng=map.mouseEventToLatLng(t);
+    if(t0){clearTimeout(t0);}
+    t0=setTimeout(function(){
+      t0=null;
+      if(!moved){ fire(latlng.lat,latlng.lng); }
+    },600);
+  },{passive:true});
+  el.addEventListener('touchmove',function(e){
+    if(e.touches.length!==1){ moved=true; return; }
+    var t=e.touches[0];
+    if(Math.abs(t.clientX-sx)>14 || Math.abs(t.clientY-sy)>14) moved=true;
+  },{passive:true});
+  el.addEventListener('touchend',function(e){
+    if(t0){clearTimeout(t0);t0=null;}
+  });
+  map.on('contextmenu',function(ev){
+    fire(ev.latlng.lat,ev.latlng.lng);
+  });
+}
+
+function setTile(mode){
+  tileMode=mode;
+  if(!map) return;
+  if(osm){map.removeLayer(osm);osm=null;}
+  if(sat){map.removeLayer(sat);sat=null;}
+  if(adm){map.removeLayer(adm);adm=null;}
+  if(mode==='satellite'){
+    sat=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'&copy; Esri World Imagery'}).addTo(map);
+    adm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,opacity:0.35,attribution:'&copy; OpenStreetMap contributors'}).addTo(map);
+  }else{
+    osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; OpenStreetMap contributors'}).addTo(map);
+  }
+}
+
+function keyOf(f){
+  if(f.id!==undefined && f.id!==null && f.id!=='') return ''+f.id;
+  if(f.properties){
+    if(f.properties.name) return ''+f.properties.name;
+    if(f.properties.NAME) return ''+f.properties.NAME;
+  }
+  return '';
+}
+
+function nameOf(f){
+  if(f.properties){
+    if(f.properties.name) return ''+f.properties.name;
+    if(f.properties.NAME) return ''+f.properties.NAME;
+  }
+  return keyOf(f);
+}
+
+function escapeHtml(s){
+  return (''+s).replace(/[&<>"']/g,function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+
+function hasAny(s){
+  for(var i=0;i<regions.length;i++){ if(regions[i].state===s) return true; }
+  return false;
+}
+
+function styleFor(f){
+  var st=stateMap[keyOf(f)];
+  var hasWhite=hasAny('white');
+  if(st==='black'){
+    return {color:'#111111',weight:1,fillColor:'#262626',fillOpacity:0.85};
+  }
+  if(st==='white'){
+    return {color:'#2e86de',weight:2,fillColor:'#a8e1ff',fillOpacity:0.55};
+  }
+  if(hasWhite){
+    return {color:'#c9c9c9',weight:1,fillColor:'#e0e0e0',fillOpacity:0.6};
+  }
+  return {color:'#8fa8c0',weight:1,fillColor:'#d9e7f5',fillOpacity:0.18};
+}
+
+function renderRegions(){
+  if(geoLayer){map.removeLayer(geoLayer);geoLayer=null;}
+  if(labelLayer){map.removeLayer(labelLayer);labelLayer=null;}
+  if(!geoData) return;
+  geoLayer=L.geoJSON(geoData,{
+    style:styleFor,
+    onEachFeature:function(feature,layer){
+      layer.on('click',function(){
+        if(toolMode!=='area') return;
+        var k=keyOf(feature);
+        var nm=nameOf(feature);
+        if(window.Android){ window.Android.onRegionTap(k,nm,areaMode); }
+      });
+    }
+  }).addTo(map);
+
+  // permanent region/country name labels
+  labelLayer=L.layerGroup().addTo(map);
+  geoLayer.eachLayer(function(layer){
+    var nm=nameOf(layer.feature);
+    if(!nm) return;
+    try{
+      var c=layer.getBounds().getCenter();
+      L.marker(c,{
+        icon:L.divIcon({className:'region-label', html:escapeHtml(nm), iconSize:null}),
+        interactive:false, keyboard:false
+      }).addTo(labelLayer);
+    }catch(e){}
+  });
+
+  markerLayer.bringToFront();
+}
+
+function pinIcon(){
+  return L.divIcon({
+    className:'',
+    html:'<div class="mk"><svg width="30" height="40" viewBox="0 0 30 40"><path d="M15 1C7.8 1 2 6.8 2 14c0 9.7 13 24 13 24s13-14.3 13-24C28 6.8 22.2 1 15 1z" fill="#2e86de" stroke="#ffffff" stroke-width="1.2"/><circle cx="15" cy="14" r="5.6" fill="#ffffff"/></svg></div>',
+    iconSize:[30,40],
+    iconAnchor:[15,40],
+    popupAnchor:[0,-38]
+  });
+}
+
+function markerLabelHtml(m){
+  var parts=[];
+  if(m.title){ parts.push('<div class="mk-title">'+escapeHtml(m.title)+'</div>'); }
+  if(m.content){ parts.push('<div class="mk-content">'+escapeHtml(m.content)+'</div>'); }
+  return parts.length ? parts.join('') : null;
+}
+
+function renderMarkers(){
+  if(markerLayer){map.removeLayer(markerLayer);}
+  markerLayer=L.featureGroup().addTo(map);
+  for(var i=0;i<markers.length;i++){
+    (function(m){
+      var mk=L.marker([m.lat,m.lng],{icon:pinIcon()}).addTo(markerLayer);
+      var html=markerLabelHtml(m);
+      if(html){
+        mk.bindTooltip(html,{permanent:true,direction:'top',offset:[0,-42],className:'mk-tooltip'});
+      }
+      mk.on('click',function(){ if(window.Android){ window.Android.onMarkerTap(''+(m.id||'')); } });
+    })(markers[i]);
+  }
+}
+
+function rebuildMaps(){
+  stateMap={};
+  for(var i=0;i<regions.length;i++){ stateMap[regions[i].key]=regions[i].state; }
+}
+
+window.__initData=function(geojsonStr,markersStr,regionsStr,tile,view){
+  geoData=JSON.parse(geojsonStr);
+  markers=JSON.parse(markersStr||'[]');
+  regions=JSON.parse(regionsStr||'[]');
+  rebuildMaps();
+  ensureMap(view||{});
+  if(tile) setTile(tile);
+  renderRegions();
+  renderMarkers();
+};
+
+window.__updateAll=function(regionsStr,markersStr){
+  regions=JSON.parse(regionsStr||'[]');
+  markers=JSON.parse(markersStr||'[]');
+  rebuildMaps();
+  renderRegions();
+  renderMarkers();
+};
+
+window.__setTile=function(t){ setTile(t); };
+window.__setTool=function(t){ toolMode=t; };
+window.__setArea=function(a){ areaMode=a; };
+</script>
+</body>
+</html>

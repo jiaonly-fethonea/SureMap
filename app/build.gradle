@@ -1,0 +1,40 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.sure.mapnote'
+    compileSdk 33
+
+    defaultConfig {
+        applicationId 'com.sure.mapnote'
+        minSdk 26
+        targetSdk 33
+        versionCode 1
+        versionName '1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    sourceSets {
+        main {
+            // assets (map.html + Leaflet + GeoJSON) live under src/main/assets by default
+            assets.srcDirs += ['src/main/assets']
+        }
+    }
+}
+
+dependencies {
+    // No external runtime dependencies are required.
+    // The map UI runs inside a WebView (assets/map.html + Leaflet).
+}
